@@ -1,0 +1,44 @@
+name: Test bucket
+
+# Adds this repository as the headlesshq bucket, exactly like users do,
+# and installs every manifest in it.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, windows-11-arm ]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Scoop
+        run: |
+          # runners are elevated, the Scoop installer refuses that without -RunAsAdmin
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          "$env:USERPROFILE\scoop\shims" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install all manifests
+        run: |
+          scoop bucket add headlesshq "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($manifest in Get-ChildItem bucket\*.json) {
+            $app = $manifest.BaseName
+            scoop install "headlesshq/$app"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $app --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

@@ -1,0 +1,126 @@
+name: Update headlessmc
+
+# Renders bucket/headlessmc.json for a release, installs and tests it with Scoop
+# and only then pushes it to main.
+
+on:
+  # sent by the release job of headlesshq/headlessmc
+  repository_dispatch:
+    types: [ headlessmc-release ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag of headlesshq/headlessmc (defaults to the latest release)
+        required: false
+      publish:
+        description: Push the tested manifest to main (disable to only test a release)
+        type: boolean
+        default: true
+  # fallback in case a dispatch got lost
+  schedule:
+    - cron: '17 4 * * *'
+
+concurrency:
+  group: update-headlessmc
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.render.outputs.changed }}
+      version: ${{ steps.render.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render manifest
+        id: render
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+        run: |
+          bash .github/scripts/update-headlessmc.sh "$TAG"
+          version="$(jq -r .version bucket/headlessmc.json)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- bucket/headlessmc.json; then
+            echo "headlessmc $version is up to date"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload manifest
+        if: steps.render.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: headlessmc-manifest
+          path: bucket/headlessmc.json
+
+  test:
+    needs: render
+    if: needs.render.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-11-arm runs the x64 executable through emulation
+        os: [ windows-latest, windows-11-arm ]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: headlessmc-manifest
+
+      - name: Set up Scoop
+        run: |
+          # runners are elevated, the Scoop installer refuses that without -RunAsAdmin
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          "$env:USERPROFILE\scoop\shims" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install and test
+        env:
+          VERSION: ${{ needs.render.outputs.version }}
+        run: |
+          scoop install .\headlessmc.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = headlessmc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($version -ne $env:VERSION) {
+            Write-Host "::error::expected version $env:VERSION, but got $version"
+            exit 1
+          }
+
+  publish:
+    needs: [ render, test ]
+    # inputs.publish is only set for manual runs
+    if: inputs.publish != false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: headlessmc-manifest
+          path: ${{ runner.temp }}
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ needs.render.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp "$RUNNER_TEMP/headlessmc.json" bucket/headlessmc.json
+          git add bucket/headlessmc.json
+          git commit -m "headlessmc $VERSION"
+          # main might have moved while the tests ran
+          git pull --rebase origin main
+          git push origin HEAD:main
