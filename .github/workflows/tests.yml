@@ -24,6 +24,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Scoop
         run: |
@@ -33,7 +35,10 @@ jobs:
 
       - name: Install all manifests
         run: |
-          scoop bucket add headlesshq "$env:GITHUB_WORKSPACE"
+          # Scoop only accepts git URLs, and the checkout belongs to another user than the elevated shell
+          git config --global --add safe.directory '*'
+          $url = "file:///" + ($env:GITHUB_WORKSPACE -replace '\\', '/')
+          scoop bucket add headlesshq $url
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($manifest in Get-ChildItem bucket\*.json) {
             $app = $manifest.BaseName
