@@ -89,8 +89,10 @@ jobs:
         run: |
           scoop install .\headlessmc.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $version = headlessmc --version
+          $output = headlessmc --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # "HeadlessMc <version>" (only "<version>" up to 3.0.0-RC8), followed by a notice if a newer release is available
+          $version = @($output)[0] -replace '^HeadlessMc ', ''
           if ($version -ne $env:VERSION) {
             Write-Host "::error::expected version $env:VERSION, but got $version"
             exit 1
@@ -98,8 +100,8 @@ jobs:
 
   publish:
     needs: [ render, test ]
-    # inputs.publish is only set for manual runs
-    if: inputs.publish != false
+    # inputs.publish is only set for manual runs, without one it is empty, which equals false in expressions
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
